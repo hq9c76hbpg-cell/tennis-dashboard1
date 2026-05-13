@@ -11,8 +11,9 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { useState } from 'react';
-import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import Papa from 'papaparse';
+import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown, Upload } from 'lucide-react';
 
 interface Session {
   date: string;
@@ -78,9 +79,78 @@ const rawSessions: Session[] = [
   { date: '2026-03-27', duration: '0h 51m', durationMinutes: 51,  avgHR: 138, maxHR: 180, calories: 414, steps: 2714, aerobicTE: 2.8, bodyBatteryDrain: -8, tempF: 63 },
 ];
 
-const chartSessions = [...rawSessions].reverse();
+function cloneSessions(sessions: Session[]): Session[] {
+  return JSON.parse(JSON.stringify(sessions)) as Session[];
+}
+
+function normalizeCsvRow(row: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(row)) {
+    const key = k.replace(/^\ufeff/, '').trim();
+    out[key] = v === null || v === undefined ? '' : String(v).trim();
+  }
+  return out;
+}
+
+function csvCell(row: Record<string, string>, ...names: string[]): string {
+  for (const n of names) {
+    const v = row[n];
+    if (v !== undefined && v !== '') return v;
+  }
+  return '';
+}
+
+/** Parse "H:MM:SS" or "MM:SS" into total minutes (rounded). */
+function parseHmsToDurationMinutes(time: string): number {
+  const cleaned = time.trim();
+  if (!cleaned) return 0;
+  const parts = cleaned.split(':').map((p) => parseInt(/-?\d+/.exec(p)?.[0] ?? '0', 10) || 0);
+  if (parts.length >= 3) {
+    const [h, m, s] = parts;
+    return Math.round(h * 60 + m + s / 60);
+  }
+  if (parts.length === 2) {
+    const [m, s] = parts;
+    return Math.round(m + s / 60);
+  }
+  if (parts.length === 1) return parts[0] || 0;
+  return 0;
+}
+
+function parseGarminDateToIso(dateStr: string): string | null {
+  const t = dateStr.trim();
+  if (!t) return null;
+  const isoStart = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoStart) {
+    return `${isoStart[1]}-${isoStart[2].padStart(2, '0')}-${isoStart[3].padStart(2, '0')}`;
+  }
+  const us = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (us) {
+    return `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
+  }
+  const d = new Date(t);
+  if (!Number.isNaN(d.getTime())) {
+    return d.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function parseNumLoose(s: string): number {
+  if (!s) return 0;
+  const n = parseFloat(s.replace(/,/g, '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Garmin drain is shown as a loss — store as a negative number. */
+function parseBodyBatteryDrain(s: string): number {
+  const n = parseFloat(String(s).replace(/,/g, '').trim());
+  if (!Number.isFinite(n)) return 0;
+  if (n > 0) return -Math.abs(n);
+  return n;
+}
 
 function avg(arr: number[]) {
+  if (arr.length === 0) return 0;
   return Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
 }
 
@@ -88,6 +158,59 @@ function formatMinutes(mins: number) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function parseTennisSessionsFromGarminCsv(text: string): { sessions: Session[]; errors: string[] } {
+  const errors: string[] = [];
+  const parsed = Papa.parse<Record<string, unknown>>(text, {
+    header: true,
+    skipEmptyLines: 'greedy',
+  });
+  for (const e of parsed.errors.slice(0, 5)) {
+    if (e.message) errors.push(e.message);
+  }
+  const rows = parsed.data ?? [];
+  const out: Session[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const raw = rows[i];
+    if (!raw || typeof raw !== 'object') continue;
+    const row = normalizeCsvRow(raw);
+    const activityType = csvCell(row, 'Activity Type').trim();
+    if (activityType !== 'Tennis' && activityType.toLowerCase() !== 'tennis') continue;
+
+    const dateIso = parseGarminDateToIso(csvCell(row, 'Date'));
+    if (!dateIso) {
+      errors.push(`Skipped row ${i + 2}: could not parse date "${csvCell(row, 'Date')}"`);
+      continue;
+    }
+
+    const timeStr = csvCell(row, 'Time');
+    const durationMinutes = parseHmsToDurationMinutes(timeStr);
+    const duration = formatMinutes(durationMinutes);
+
+    const calories = Math.round(parseNumLoose(csvCell(row, 'Calories')));
+    const avgHR = Math.round(parseNumLoose(csvCell(row, 'Avg HR', 'Average HR')));
+    const maxHR = Math.round(parseNumLoose(csvCell(row, 'Max HR')));
+    const aerobicRaw = csvCell(row, 'Aerobic TE');
+    const aerobicTE = aerobicRaw === '' ? undefined : parseNumLoose(aerobicRaw);
+    const steps = Math.round(parseNumLoose(csvCell(row, 'Steps')));
+    const bodyBatteryDrain = parseBodyBatteryDrain(csvCell(row, 'Body Battery Drain'));
+
+    out.push({
+      date: dateIso,
+      duration,
+      durationMinutes,
+      avgHR,
+      maxHR,
+      calories,
+      steps,
+      aerobicTE,
+      bodyBatteryDrain,
+      tempF: 0,
+    });
+  }
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return { sessions: out, errors };
 }
 
 function teBadge(te: number | undefined) {
@@ -107,18 +230,6 @@ function formatDateFull(iso: string) {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
-
-const chartData = chartSessions.map(s => ({
-  date: formatDateShort(s.date),
-  avgHR: s.avgHR,
-  calories: s.calories,
-}));
-
-const tempHrScatterData = rawSessions.map((s) => ({
-  tempF: s.tempF,
-  avgHR: s.avgHR,
-  date: s.date,
-}));
 
 /** Least-squares regression y = slope * x + intercept for paired (x, y) samples. */
 function leastSquaresLine(xs: number[], ys: number[]): { slope: number; intercept: number } | null {
@@ -142,25 +253,6 @@ function leastSquaresLine(xs: number[], ys: number[]): { slope: number; intercep
   const intercept = (sumY - slope * sumX) / n;
   return { slope, intercept };
 }
-
-const tempHrXs = tempHrScatterData.map((d) => d.tempF);
-const tempHrYs = tempHrScatterData.map((d) => d.avgHR);
-const tempHrRegression = leastSquaresLine(tempHrXs, tempHrYs);
-const tempHrTrendPad = 2;
-const tempHrXMin = Math.min(...tempHrXs) - tempHrTrendPad;
-const tempHrXMax = Math.max(...tempHrXs) + tempHrTrendPad;
-const tempHrTrendLineData =
-  tempHrRegression != null
-    ? [
-        { tempF: tempHrXMin, avgHR: tempHrRegression.slope * tempHrXMin + tempHrRegression.intercept },
-        { tempF: tempHrXMax, avgHR: tempHrRegression.slope * tempHrXMax + tempHrRegression.intercept },
-      ]
-    : [];
-
-const totalSessions = rawSessions.length;
-const avgCalories = avg(rawSessions.map(s => s.calories));
-const avgHR = avg(rawSessions.map(s => s.avgHR));
-const avgDuration = avg(rawSessions.map(s => s.durationMinutes));
 
 interface TooltipProps {
   active?: boolean;
@@ -307,18 +399,161 @@ function SessionDetailPanel({ session: s }: { session: Session }) {
 }
 
 export default function App() {
-  const [expandedSessionDate, setExpandedSessionDate] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<Session[]>(() => cloneSessions(rawSessions));
+  const [usingFallbackData, setUsingFallbackData] = useState(true);
+  const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
+  const [csvSuccessMessage, setCsvSuccessMessage] = useState<string | null>(null);
+  const [csvErrorMessage, setCsvErrorMessage] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const chartSessions = useMemo(() => [...sessions].reverse(), [sessions]);
+  const chartData = useMemo(
+    () =>
+      chartSessions.map((s) => ({
+        date: formatDateShort(s.date),
+        avgHR: s.avgHR,
+        calories: s.calories,
+      })),
+    [chartSessions],
+  );
+  const tempHrScatterData = useMemo(
+    () =>
+      sessions.map((s) => ({
+        tempF: s.tempF,
+        avgHR: s.avgHR,
+        date: s.date,
+      })),
+    [sessions],
+  );
+  const tempHrRegression = useMemo(() => {
+    const xs = tempHrScatterData.map((d) => d.tempF);
+    const ys = tempHrScatterData.map((d) => d.avgHR);
+    return leastSquaresLine(xs, ys);
+  }, [tempHrScatterData]);
+  const tempHrTrendLineData = useMemo(() => {
+    if (tempHrScatterData.length === 0) return [];
+    const xs = tempHrScatterData.map((d) => d.tempF);
+    const pad = 2;
+    const xMin = Math.min(...xs) - pad;
+    const xMax = Math.max(...xs) + pad;
+    if (tempHrRegression == null) return [];
+    return [
+      { tempF: xMin, avgHR: tempHrRegression.slope * xMin + tempHrRegression.intercept },
+      { tempF: xMax, avgHR: tempHrRegression.slope * xMax + tempHrRegression.intercept },
+    ];
+  }, [tempHrScatterData, tempHrRegression]);
+
+  const totalSessions = sessions.length;
+  const avgCalories = avg(sessions.map((s) => s.calories));
+  const avgHR = avg(sessions.map((s) => s.avgHR));
+  const avgDuration = avg(sessions.map((s) => s.durationMinutes));
+
+  useEffect(() => {
+    if (!csvSuccessMessage) return;
+    const t = window.setTimeout(() => setCsvSuccessMessage(null), 6500);
+    return () => window.clearTimeout(t);
+  }, [csvSuccessMessage]);
+
+  const processCsvText = (text: string) => {
+    setCsvErrorMessage(null);
+    setCsvSuccessMessage(null);
+    const { sessions: imported, errors } = parseTennisSessionsFromGarminCsv(text);
+    if (imported.length === 0) {
+      setCsvErrorMessage(
+        errors[0] ??
+          'No Tennis activities found. Export your activities CSV from Garmin Connect and ensure the Activity Type column includes "Tennis".',
+      );
+      return;
+    }
+    setSessions(imported);
+    setUsingFallbackData(false);
+    setExpandedSessionKey(null);
+    setCsvSuccessMessage(`Imported ${imported.length} tennis session${imported.length === 1 ? '' : 's'} from CSV.`);
+  };
+
+  const handleFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setCsvErrorMessage('Please choose a .csv file.');
+      setCsvSuccessMessage(null);
+      return;
+    }
+    file.text().then(processCsvText).catch(() => {
+      setCsvErrorMessage('Could not read that file.');
+      setCsvSuccessMessage(null);
+    });
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
 
         {/* Header */}
-        <header className="mb-10">
+        <header className="mb-6">
           <h1 className="text-3xl font-extrabold tracking-tight mb-1">
-            <span className="mr-2">🎾</span>My Tennis Dashboard
+            <span className="mr-2">🎾</span>Shaunak's Personalized Tennis Dashboard
           </h1>
-          <p className="text-zinc-500 text-sm">{totalSessions} sessions recorded</p>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <p className="text-zinc-500 text-sm">{totalSessions} sessions recorded</p>
+            {usingFallbackData && (
+              <span className="text-[11px] text-zinc-600 font-medium tracking-wide">· using sample data</span>
+            )}
+          </div>
         </header>
+
+        {/* CSV import */}
+        <div className="mb-8 space-y-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="sr-only"
+            onChange={(e) => {
+              handleFile(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              setDragActive(true);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragActive(false);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragActive(false);
+              const f = e.dataTransfer.files?.[0];
+              handleFile(f);
+            }}
+            className={`group w-full rounded-xl border border-dashed px-4 py-5 text-center transition-colors duration-200 cursor-pointer select-none
+              ${dragActive ? 'border-sky-500/60 bg-sky-500/5' : 'border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 hover:bg-zinc-900/70'}
+            `}
+          >
+            <Upload className="w-6 h-6 mx-auto mb-2 text-zinc-500 group-hover:text-zinc-400 transition-colors" aria-hidden />
+            <p className="text-sm font-medium text-zinc-300">Drop your Garmin Activities CSV here</p>
+            <p className="text-[11px] text-zinc-600 mt-1">or click to browse · Tennis activities only</p>
+          </button>
+          {csvSuccessMessage && (
+            <p className="text-xs font-medium text-emerald-400/90 pl-1" role="status">
+              {csvSuccessMessage}
+            </p>
+          )}
+          {csvErrorMessage && (
+            <p className="text-xs font-medium text-amber-400/90 pl-1" role="alert">
+              {csvErrorMessage}
+            </p>
+          )}
+        </div>
 
         {/* Summary Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
@@ -418,17 +653,18 @@ export default function App() {
         <section>
           <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Session Log</h2>
           <div className="flex flex-col gap-2.5">
-            {rawSessions.map((s) => {
+            {sessions.map((s, idx) => {
               const badge = teBadge(s.aerobicTE);
-              const isOpen = expandedSessionDate === s.date;
+              const rowKey = `${idx}-${s.date}`;
+              const isOpen = expandedSessionKey === rowKey;
               return (
                 <div
-                  key={s.date}
+                  key={rowKey}
                   className="group rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden transition-[box-shadow] duration-300 hover:border-zinc-700 hover:shadow-lg hover:shadow-black/20"
                 >
                   <button
                     type="button"
-                    onClick={() => setExpandedSessionDate(isOpen ? null : s.date)}
+                    onClick={() => setExpandedSessionKey(isOpen ? null : rowKey)}
                     aria-expanded={isOpen}
                     className="w-full text-left px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
                   >
