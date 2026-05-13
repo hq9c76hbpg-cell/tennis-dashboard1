@@ -541,15 +541,27 @@ export default function App() {
     ];
   }, [tempHrScatterData, tempHrRegression]);
 
+  // Garmin sometimes records sessions that weren't manually stopped — drop anything
+  // longer than 5 hours when computing duration-based stats so a single outlier
+  // doesn't dominate "Longest Session", "Total Hours on Court", or "Avg Duration".
+  const MAX_SANE_DURATION_MINUTES = 180;
+  const saneDurationSessions = useMemo(
+    () => sessions.filter((s) => s.durationMinutes <= MAX_SANE_DURATION_MINUTES),
+    [sessions],
+  );
+
   const totalSessions = sessions.length;
   const avgCalories = avg(sessions.map((s) => s.calories));
   const avgHR = avg(sessions.map((s) => s.avgHR));
-  const avgDuration = avg(sessions.map((s) => s.durationMinutes));
+  const avgDuration = avg(saneDurationSessions.map((s) => s.durationMinutes));
 
   const highlights = useMemo<Highlight[]>(() => {
     if (sessions.length === 0) return [];
 
-    const longest = sessions.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a));
+    const durationPool = sessions.filter((s) => s.durationMinutes <= MAX_SANE_DURATION_MINUTES);
+    const longest = durationPool.length > 0
+      ? durationPool.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a))
+      : null;
     const highestHR = sessions.reduce((a, b) => (b.avgHR > a.avgHR ? b : a));
     const mostCal = sessions.reduce((a, b) => (b.calories > a.calories ? b : a));
     const lowestBattery = sessions.reduce((a, b) => (b.bodyBatteryDrain < a.bodyBatteryDrain ? b : a));
@@ -572,13 +584,20 @@ export default function App() {
       if (!favoriteDay || count > favoriteDay.count) favoriteDay = { day, count };
     }
 
-    const totalMinutes = sessions.reduce((acc, s) => acc + s.durationMinutes, 0);
+    const totalMinutes = durationPool.reduce((acc, s) => acc + s.durationMinutes, 0);
 
     const cards: Highlight[] = [
-      { emoji: '🏆', label: 'Longest Session', value: longest.duration, subtext: formatDateFull(longest.date) },
       { emoji: '🔥', label: 'Highest Avg HR', value: `${highestHR.avgHR} bpm`, subtext: formatDateFull(highestHR.date) },
       { emoji: '⚡', label: 'Most Calories', value: `${mostCal.calories} kcal`, subtext: formatDateFull(mostCal.date) },
     ];
+    if (longest) {
+      cards.unshift({
+        emoji: '🏆',
+        label: 'Longest Session',
+        value: longest.duration,
+        subtext: formatDateFull(longest.date),
+      });
+    }
     if (peakTE && typeof peakTE.aerobicTE === 'number') {
       cards.push({
         emoji: '💪',
@@ -606,7 +625,7 @@ export default function App() {
       emoji: '📈',
       label: 'Total Hours on Court',
       value: formatMinutes(totalMinutes),
-      subtext: `Across ${sessions.length} session${sessions.length === 1 ? '' : 's'}`,
+      subtext: `Across ${durationPool.length} session${durationPool.length === 1 ? '' : 's'}`,
     });
 
     return cards;
