@@ -11,7 +11,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer } from 'lucide-react';
+import { useState } from 'react';
+import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown } from 'lucide-react';
 
 interface Session {
   date: string;
@@ -21,16 +22,50 @@ interface Session {
   maxHR: number;
   calories: number;
   steps: number;
-  aerobicTE: number;
   bodyBatteryDrain: number;
   tempF: number;
+  hrZones?: { zone: string; minutes: number; color: string }[];
+  aerobicTE?: number;
+  anaerobicTE?: number;
+  primaryBenefit?: string;
+  trainingLoad?: number;
+  sweatLoss?: number;
+  startBattery?: number;
+  endBattery?: number;
+  restingHR?: number;
 }
 
 const rawSessions: Session[] = [
-  { date: '2026-05-11', duration: '1h 56m', durationMinutes: 116, avgHR: 153, maxHR: 183, calories: 895, steps: 5202, aerobicTE: 3.8, bodyBatteryDrain: -12, tempF: 76 },
-  { date: '2026-05-07', duration: '1h 59m', durationMinutes: 119, avgHR: 134, maxHR: 188, calories: 690, steps: 4418, aerobicTE: 3.1, bodyBatteryDrain: -9, tempF: 72 },
-  { date: '2026-05-03', duration: '2h 16m', durationMinutes: 136, avgHR: 136, maxHR: 172, calories: 800, steps: 4590, aerobicTE: 3.0, bodyBatteryDrain: -9, tempF: 75 },
-  { date: '2026-05-02', duration: '1h 24m', durationMinutes: 84,  avgHR: 158, maxHR: 200, calories: 763, steps: 3834, aerobicTE: 5.0, bodyBatteryDrain: -15, tempF: 85 },
+  {
+    date: '2026-05-11',
+    duration: '1h 56m',
+    durationMinutes: 116,
+    avgHR: 153,
+    maxHR: 183,
+    calories: 895,
+    steps: 5202,
+    aerobicTE: 3.8,
+    bodyBatteryDrain: -12,
+    tempF: 76,
+    hrZones: [
+      { zone: 'Zone 1', minutes: 0, color: '#94a3b8' },
+      { zone: 'Zone 2', minutes: 1, color: '#60a5fa' },
+      { zone: 'Zone 3', minutes: 11, color: '#34d399' },
+      { zone: 'Zone 4', minutes: 72, color: '#fb923c' },
+      { zone: 'Zone 5', minutes: 31, color: '#f87171' },
+      { zone: 'Zone 6', minutes: 1, color: '#e11d48' },
+    ],
+    anaerobicTE: 3.4,
+    primaryBenefit: 'Sprint',
+    trainingLoad: 278,
+    sweatLoss: 1767,
+    startBattery: 28,
+    endBattery: 16,
+    restingHR: 64,
+  },
+  { date: '2026-05-07', duration: '1h 59m', durationMinutes: 119, avgHR: 134, maxHR: 188, calories: 690, steps: 4418, aerobicTE: 3.1, bodyBatteryDrain: -9, tempF: 72, anaerobicTE: 1.8, trainingLoad: 182 },
+  { date: '2026-05-03', duration: '2h 16m', durationMinutes: 136, avgHR: 136, maxHR: 172, calories: 800, steps: 4590, aerobicTE: 3.0, bodyBatteryDrain: -9, tempF: 75, primaryBenefit: 'Tempo' },
+  { date: '2026-05-02', duration: '1h 24m', durationMinutes: 84,  avgHR: 158, maxHR: 200, calories: 763, steps: 3834, aerobicTE: 5.0, bodyBatteryDrain: -15, tempF: 85, trainingLoad: 310, restingHR: 62 },
   { date: '2026-04-28', duration: '1h 58m', durationMinutes: 118, avgHR: 144, maxHR: 186, calories: 852, steps: 3802, aerobicTE: 4.1, bodyBatteryDrain: -15, tempF: 71 },
   { date: '2026-04-26', duration: '2h 01m', durationMinutes: 121, avgHR: 148, maxHR: 188, calories: 924, steps: 4436, aerobicTE: 4.4, bodyBatteryDrain: -15, tempF: 73 },
   { date: '2026-04-22', duration: '1h 56m', durationMinutes: 116, avgHR: 137, maxHR: 186, calories: 796, steps: 3988, aerobicTE: 3.5, bodyBatteryDrain: -12, tempF: 67 },
@@ -55,7 +90,8 @@ function formatMinutes(mins: number) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function teBadge(te: number) {
+function teBadge(te: number | undefined) {
+  if (te === undefined) return { color: 'bg-zinc-600/40 text-zinc-400 border border-zinc-600/40' };
   if (te >= 5)   return { color: 'bg-red-500/20 text-red-400 border border-red-500/30' };
   if (te >= 4)   return { color: 'bg-orange-500/20 text-orange-400 border border-orange-500/30' };
   if (te >= 3)   return { color: 'bg-sky-500/20 text-sky-400 border border-sky-500/30' };
@@ -183,7 +219,95 @@ function TempHrScatterTooltip({
   );
 }
 
+function DetailStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 px-3 py-2.5">
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">{label}</p>
+      <p className="text-sm font-semibold text-zinc-100 tabular-nums leading-tight">{value}</p>
+    </div>
+  );
+}
+
+function SessionDetailPanel({ session: s }: { session: Session }) {
+  const zones = s.hrZones;
+  const zoneTotal = zones?.reduce((acc, z) => acc + z.minutes, 0) ?? 0;
+  const hasZoneBar = zones && zones.length > 0 && zoneTotal > 0;
+
+  return (
+    <div className="border-t border-zinc-800/90 px-5 pb-5 pt-4 space-y-5 bg-zinc-950/30">
+      <div>
+        <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest mb-2.5">Heart rate zones</p>
+        {hasZoneBar ? (
+          <>
+            <div className="flex h-4 w-full min-w-0 rounded-lg overflow-hidden ring-1 ring-zinc-800">
+              {zones!.map((z) =>
+                z.minutes > 0 ? (
+                  <div
+                    key={z.zone}
+                    className="min-w-[3px] transition-[flex-grow] duration-300"
+                    style={{ flexGrow: z.minutes, flexBasis: 0, backgroundColor: z.color }}
+                    title={`${z.zone}: ${z.minutes} min`}
+                  />
+                ) : null,
+              )}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
+              {zones!.map((z) => (
+                <div key={z.zone} className="flex items-center gap-1.5 text-xs">
+                  <span className="w-2 h-2 rounded-full shrink-0 ring-1 ring-zinc-700/80" style={{ backgroundColor: z.color }} />
+                  <span className="text-zinc-400">{z.zone}</span>
+                  <span className="tabular-nums text-zinc-200 font-medium">{z.minutes}m</span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-zinc-500 leading-relaxed bg-zinc-950/50 border border-zinc-800 rounded-xl px-3.5 py-3">
+            Detailed zone data not available — export FIT file from Garmin Connect to unlock
+          </p>
+        )}
+      </div>
+
+      <div>
+        <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest mb-2">Training effect & load</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <DetailStat
+            label="Aerobic TE"
+            value={typeof s.aerobicTE === 'number' ? s.aerobicTE.toFixed(1) : '—'}
+          />
+          <DetailStat
+            label="Anaerobic TE"
+            value={typeof s.anaerobicTE === 'number' ? s.anaerobicTE.toFixed(1) : '—'}
+          />
+          <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 px-3 py-2.5 sm:col-span-1">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500 mb-1">Primary benefit</p>
+            {s.primaryBenefit ? (
+              <span className="inline-flex items-center rounded-full border border-violet-500/35 bg-violet-500/15 px-2.5 py-0.5 text-xs font-semibold text-violet-200">
+                {s.primaryBenefit}
+              </span>
+            ) : (
+              <p className="text-sm font-semibold text-zinc-500">—</p>
+            )}
+          </div>
+          <DetailStat label="Training load" value={typeof s.trainingLoad === 'number' ? String(s.trainingLoad) : '—'} />
+        </div>
+      </div>
+
+      <div>
+        <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest mb-2">Fluids & recovery</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <DetailStat label="Sweat loss" value={typeof s.sweatLoss === 'number' ? `${s.sweatLoss} ml` : '—'} />
+          <DetailStat label="Start battery" value={typeof s.startBattery === 'number' ? String(s.startBattery) : '—'} />
+          <DetailStat label="End battery" value={typeof s.endBattery === 'number' ? String(s.endBattery) : '—'} />
+          <DetailStat label="Resting HR" value={typeof s.restingHR === 'number' ? `${s.restingHR} bpm` : '—'} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const [expandedSessionDate, setExpandedSessionDate] = useState<string | null>(null);
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
@@ -296,30 +420,55 @@ export default function App() {
           <div className="flex flex-col gap-2.5">
             {rawSessions.map((s) => {
               const badge = teBadge(s.aerobicTE);
+              const isOpen = expandedSessionDate === s.date;
               return (
                 <div
                   key={s.date}
-                  className="group bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-2xl px-5 py-4 transition-all duration-150"
+                  className="group rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden transition-[box-shadow] duration-300 hover:border-zinc-700 hover:shadow-lg hover:shadow-black/20"
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                    <div className="flex items-start sm:items-center gap-3 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedSessionDate(isOpen ? null : s.date)}
+                    aria-expanded={isOpen}
+                    className="w-full text-left px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+                  >
+                    <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
                       <div className="flex-1 min-w-0">
                         <p className="text-zinc-100 font-semibold text-sm leading-tight">{formatDateFull(s.date)}</p>
                         <p className="text-zinc-500 text-xs mt-0.5 flex items-center gap-1">
-                          <Clock className="w-3 h-3" /> {s.duration}
+                          <Clock className="w-3 h-3 shrink-0" /> {s.duration}
                         </p>
                       </div>
                       <span className={`shrink-0 px-2.5 py-0.5 rounded-full text-xs font-bold tabular-nums ${badge.color}`}>
-                        TE {s.aerobicTE.toFixed(1)}
+                        TE {typeof s.aerobicTE === 'number' ? s.aerobicTE.toFixed(1) : '—'}
                       </span>
                     </div>
 
-                    <div className="flex flex-wrap gap-x-5 gap-y-2">
-                      <Metric icon={<Heart className="w-3.5 h-3.5 text-red-400" />} label="Avg HR" value={`${s.avgHR}`} unit=" bpm" />
-                      <Metric icon={<Heart className="w-3.5 h-3.5 text-rose-300" />} label="Max HR" value={`${s.maxHR}`} unit=" bpm" />
-                      <Metric icon={<Flame className="w-3.5 h-3.5 text-amber-400" />} label="Cal" value={`${s.calories}`} unit=" kcal" />
-                      <Metric icon={<Zap className="w-3.5 h-3.5 text-lime-400" />} label="Steps" value={s.steps.toLocaleString()} unit="" />
-                      <Metric icon={<Battery className="w-3.5 h-3.5 text-sky-400" />} label="Battery" value={`${s.bodyBatteryDrain}`} unit="" highlight="sky" />
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 sm:justify-end">
+                      <div className="flex flex-wrap gap-x-5 gap-y-2">
+                        <Metric icon={<Heart className="w-3.5 h-3.5 text-red-400" />} label="Avg HR" value={`${s.avgHR}`} unit=" bpm" />
+                        <Metric icon={<Heart className="w-3.5 h-3.5 text-rose-300" />} label="Max HR" value={`${s.maxHR}`} unit=" bpm" />
+                        <Metric icon={<Flame className="w-3.5 h-3.5 text-amber-400" />} label="Cal" value={`${s.calories}`} unit=" kcal" />
+                        <Metric icon={<Zap className="w-3.5 h-3.5 text-lime-400" />} label="Steps" value={s.steps.toLocaleString()} unit="" />
+                        <Metric icon={<Battery className="w-3.5 h-3.5 text-sky-400" />} label="Battery" value={`${s.bodyBatteryDrain}`} unit="" highlight="sky" />
+                      </div>
+                      <ChevronDown
+                        className={`w-5 h-5 shrink-0 text-zinc-500 transition-transform duration-300 ease-out ${isOpen ? 'rotate-180' : ''}`}
+                        aria-hidden
+                      />
+                    </div>
+                  </button>
+
+                  <div
+                    className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+                      isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+                    }`}
+                  >
+                    <div
+                      className={`overflow-hidden min-h-0 ${!isOpen ? 'pointer-events-none' : ''}`}
+                      aria-hidden={!isOpen}
+                    >
+                      <SessionDetailPanel session={s} />
                     </div>
                   </div>
                 </div>
