@@ -13,7 +13,10 @@ import {
 } from 'recharts';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown, Upload } from 'lucide-react';
+import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown, Upload, RotateCcw } from 'lucide-react';
+
+const STORAGE_KEY = 'tennis-sessions';
+const STORAGE_VERSION = 1;
 
 interface Session {
   date: string;
@@ -81,6 +84,65 @@ const rawSessions: Session[] = [
 
 function cloneSessions(sessions: Session[]): Session[] {
   return JSON.parse(JSON.stringify(sessions)) as Session[];
+}
+
+interface StoredSessions {
+  version: number;
+  importedAt: string;
+  sessions: Session[];
+}
+
+function loadStoredSessions(): StoredSessions | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSessions>;
+    if (
+      !parsed ||
+      parsed.version !== STORAGE_VERSION ||
+      !Array.isArray(parsed.sessions) ||
+      typeof parsed.importedAt !== 'string'
+    ) {
+      return null;
+    }
+    return { version: parsed.version, importedAt: parsed.importedAt, sessions: parsed.sessions };
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredSessions(sessions: Session[]): string {
+  const importedAt = new Date().toISOString();
+  if (typeof window === 'undefined' || !window.localStorage) return importedAt;
+  try {
+    const payload: StoredSessions = { version: STORAGE_VERSION, importedAt, sessions };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore quota / private-mode failures — UI still reflects the in-memory state
+  }
+  return importedAt;
+}
+
+function clearStoredSessions(): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function formatImportedAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 function normalizeCsvRow(row: Record<string, unknown>): Record<string, string> {
@@ -223,7 +285,11 @@ function teBadge(te: number | undefined) {
 
 function formatDateShort(iso: string) {
   const d = new Date(iso + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (Number.isNaN(d.getTime())) return iso;
+  const month = d.toLocaleDateString('en-US', { month: 'short' });
+  const day = d.getDate();
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${month} ${day} '${yy}`;
 }
 
 function formatDateFull(iso: string) {
@@ -307,6 +373,24 @@ function TempHrScatterTooltip({
         <span className="text-zinc-500">Avg HR </span>
         <span className="font-bold tabular-nums">{p.avgHR} bpm</span>
       </p>
+    </div>
+  );
+}
+
+interface Highlight {
+  emoji: string;
+  label: string;
+  value: string;
+  subtext?: string;
+}
+
+function HighlightCard({ emoji, label, value, subtext }: Highlight) {
+  return (
+    <div className="shrink-0 w-[240px] md:w-auto snap-start bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex flex-col">
+      <div className="text-3xl leading-none mb-2.5" aria-hidden>{emoji}</div>
+      <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest mb-1">{label}</p>
+      <p className="text-xl font-extrabold text-zinc-100 leading-tight tabular-nums break-words">{value}</p>
+      {subtext && <p className="text-[11px] text-zinc-500 mt-1.5 leading-snug">{subtext}</p>}
     </div>
   );
 }
@@ -399,12 +483,17 @@ function SessionDetailPanel({ session: s }: { session: Session }) {
 }
 
 export default function App() {
-  const [sessions, setSessions] = useState<Session[]>(() => cloneSessions(rawSessions));
-  const [usingFallbackData, setUsingFallbackData] = useState(true);
+  const initialStored = useMemo(() => loadStoredSessions(), []);
+  const [sessions, setSessions] = useState<Session[]>(() =>
+    initialStored ? initialStored.sessions : cloneSessions(rawSessions),
+  );
+  const [usingFallbackData, setUsingFallbackData] = useState(() => initialStored == null);
+  const [lastImportedAt, setLastImportedAt] = useState<string | null>(() => initialStored?.importedAt ?? null);
   const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
   const [csvSuccessMessage, setCsvSuccessMessage] = useState<string | null>(null);
   const [csvErrorMessage, setCsvErrorMessage] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const chartSessions = useMemo(() => [...sessions].reverse(), [sessions]);
@@ -417,6 +506,14 @@ export default function App() {
       })),
     [chartSessions],
   );
+  /** Recharts `interval`: show tick every (interval+1) points — skip labels when crowded. */
+  const chartDateAxisInterval = useMemo(() => {
+    const n = chartData.length;
+    if (n <= 8) return 0;
+    const targetVisible = 7;
+    const step = Math.max(2, Math.ceil(n / targetVisible));
+    return step - 1;
+  }, [chartData.length]);
   const tempHrScatterData = useMemo(
     () =>
       sessions.map((s) => ({
@@ -449,6 +546,72 @@ export default function App() {
   const avgHR = avg(sessions.map((s) => s.avgHR));
   const avgDuration = avg(sessions.map((s) => s.durationMinutes));
 
+  const highlights = useMemo<Highlight[]>(() => {
+    if (sessions.length === 0) return [];
+
+    const longest = sessions.reduce((a, b) => (b.durationMinutes > a.durationMinutes ? b : a));
+    const highestHR = sessions.reduce((a, b) => (b.avgHR > a.avgHR ? b : a));
+    const mostCal = sessions.reduce((a, b) => (b.calories > a.calories ? b : a));
+    const lowestBattery = sessions.reduce((a, b) => (b.bodyBatteryDrain < a.bodyBatteryDrain ? b : a));
+
+    let peakTE: Session | null = null;
+    for (const s of sessions) {
+      if (typeof s.aerobicTE !== 'number') continue;
+      if (peakTE == null || s.aerobicTE > (peakTE.aerobicTE ?? -Infinity)) peakTE = s;
+    }
+
+    const dayCounts = new Map<string, number>();
+    for (const s of sessions) {
+      const d = new Date(s.date + 'T00:00:00');
+      if (Number.isNaN(d.getTime())) continue;
+      const name = d.toLocaleDateString('en-US', { weekday: 'long' });
+      dayCounts.set(name, (dayCounts.get(name) ?? 0) + 1);
+    }
+    let favoriteDay: { day: string; count: number } | null = null;
+    for (const [day, count] of dayCounts) {
+      if (!favoriteDay || count > favoriteDay.count) favoriteDay = { day, count };
+    }
+
+    const totalMinutes = sessions.reduce((acc, s) => acc + s.durationMinutes, 0);
+
+    const cards: Highlight[] = [
+      { emoji: '🏆', label: 'Longest Session', value: longest.duration, subtext: formatDateFull(longest.date) },
+      { emoji: '🔥', label: 'Highest Avg HR', value: `${highestHR.avgHR} bpm`, subtext: formatDateFull(highestHR.date) },
+      { emoji: '⚡', label: 'Most Calories', value: `${mostCal.calories} kcal`, subtext: formatDateFull(mostCal.date) },
+    ];
+    if (peakTE && typeof peakTE.aerobicTE === 'number') {
+      cards.push({
+        emoji: '💪',
+        label: 'Peak Training Effect',
+        value: peakTE.aerobicTE.toFixed(1),
+        subtext: `Peak Performance · ${formatDateFull(peakTE.date)}`,
+      });
+    }
+    cards.push({
+      emoji: '🔋',
+      label: 'Lowest Body Battery Played On',
+      value: String(lowestBattery.bodyBatteryDrain),
+      subtext: formatDateFull(lowestBattery.date),
+    });
+    if (favoriteDay) {
+      cards.push({
+        emoji: '📅',
+        label: 'Favorite Day',
+        value: favoriteDay.day,
+        subtext: `${favoriteDay.count} session${favoriteDay.count === 1 ? '' : 's'} on ${favoriteDay.day}s`,
+      });
+    }
+    // Time-of-Day Vibe is skipped — Session.date carries no hour data right now.
+    cards.push({
+      emoji: '📈',
+      label: 'Total Hours on Court',
+      value: formatMinutes(totalMinutes),
+      subtext: `Across ${sessions.length} session${sessions.length === 1 ? '' : 's'}`,
+    });
+
+    return cards;
+  }, [sessions]);
+
   useEffect(() => {
     if (!csvSuccessMessage) return;
     const t = window.setTimeout(() => setCsvSuccessMessage(null), 6500);
@@ -466,10 +629,22 @@ export default function App() {
       );
       return;
     }
+    const importedAt = saveStoredSessions(imported);
     setSessions(imported);
     setUsingFallbackData(false);
+    setLastImportedAt(importedAt);
     setExpandedSessionKey(null);
     setCsvSuccessMessage(`Imported ${imported.length} tennis session${imported.length === 1 ? '' : 's'} from CSV.`);
+  };
+
+  const handleResetToSample = () => {
+    clearStoredSessions();
+    setSessions(cloneSessions(rawSessions));
+    setUsingFallbackData(true);
+    setLastImportedAt(null);
+    setExpandedSessionKey(null);
+    setCsvErrorMessage(null);
+    setCsvSuccessMessage('Cleared imported data — showing sample sessions.');
   };
 
   const handleFile = (file: File | undefined) => {
@@ -543,6 +718,24 @@ export default function App() {
             <p className="text-sm font-medium text-zinc-300">Drop your Garmin Activities CSV here</p>
             <p className="text-[11px] text-zinc-600 mt-1">or click to browse · Tennis activities only</p>
           </button>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-1">
+            <p className="text-[11px] text-zinc-500 tabular-nums">
+              {lastImportedAt
+                ? <>Last imported: <span className="text-zinc-400">{formatImportedAt(lastImportedAt)}</span></>
+                : <span className="text-zinc-600">No CSV imported yet</span>}
+            </p>
+            {!usingFallbackData && (
+              <button
+                type="button"
+                onClick={handleResetToSample}
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50"
+                title="Clear imported data and revert to sample sessions"
+              >
+                <RotateCcw className="w-3 h-3" aria-hidden />
+                Clear data
+              </button>
+            )}
+          </div>
           {csvSuccessMessage && (
             <p className="text-xs font-medium text-emerald-400/90 pl-1" role="status">
               {csvSuccessMessage}
@@ -563,11 +756,50 @@ export default function App() {
           <StatCard icon={<Clock className="w-4 h-4" />} label="Avg Duration" value={formatMinutes(avgDuration)} unit="" accent="sky" />
         </div>
 
+        {/* Highlights */}
+        {highlights.length > 0 && (
+          <section className="mb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Highlights</h2>
+              <button
+                type="button"
+                onClick={() => setHighlightsOpen((o) => !o)}
+                aria-expanded={highlightsOpen}
+                aria-controls="highlights-panel"
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50"
+              >
+                {highlightsOpen ? 'Hide highlights' : 'Show highlights'}
+                <ChevronDown
+                  className={`w-3 h-3 transition-transform duration-300 ${highlightsOpen ? 'rotate-180' : ''}`}
+                  aria-hidden
+                />
+              </button>
+            </div>
+            <div
+              id="highlights-panel"
+              className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+                highlightsOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+              }`}
+            >
+              <div
+                className={`overflow-hidden min-h-0 ${!highlightsOpen ? 'pointer-events-none' : ''}`}
+                aria-hidden={!highlightsOpen}
+              >
+                <div className="flex md:grid md:grid-cols-3 gap-3 overflow-x-auto md:overflow-visible -mx-4 px-4 md:mx-0 md:px-0 snap-x snap-mandatory pb-2 pt-1">
+                  {highlights.map((h) => (
+                    <HighlightCard key={h.label} {...h} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
           <ChartCard icon={<Heart className="w-4 h-4 text-red-400" />} title="Avg HR Trend">
             <ResponsiveContainer width="100%" height={210}>
-              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -14, bottom: 0 }}>
+              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -14, bottom: 28 }}>
                 <defs>
                   <linearGradient id="hrGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#f87171" stopOpacity={0.2} />
@@ -575,7 +807,17 @@ export default function App() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="date" tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <XAxis
+                  dataKey="date"
+                  interval={chartDateAxisInterval}
+                  minTickGap={8}
+                  tick={{ fill: '#71717a', fontSize: 10 }}
+                  angle={-32}
+                  textAnchor="end"
+                  height={44}
+                  axisLine={false}
+                  tickLine={false}
+                />
                 <YAxis domain={['auto', 'auto']} tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <Tooltip content={<HRTooltip />} />
                 <Line
@@ -592,9 +834,19 @@ export default function App() {
 
           <ChartCard icon={<Flame className="w-4 h-4 text-amber-400" />} title="Calories per Session">
             <ResponsiveContainer width="100%" height={210}>
-              <BarChart data={chartData} margin={{ top: 5, right: 10, left: -14, bottom: 0 }}>
+              <BarChart data={chartData} margin={{ top: 5, right: 10, left: -14, bottom: 28 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <XAxis
+                  dataKey="date"
+                  interval={chartDateAxisInterval}
+                  minTickGap={8}
+                  tick={{ fill: '#71717a', fontSize: 10 }}
+                  angle={-32}
+                  textAnchor="end"
+                  height={44}
+                  axisLine={false}
+                  tickLine={false}
+                />
                 <YAxis tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <Tooltip content={<CalTooltip />} />
                 <Bar dataKey="calories" fill="#fbbf24" radius={[4, 4, 0, 0]} maxBarSize={40} />
