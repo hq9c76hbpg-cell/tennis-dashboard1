@@ -3,7 +3,7 @@ import {
   Line,
   BarChart,
   Bar,
-  ScatterChart,
+  ComposedChart,
   Scatter,
   XAxis,
   YAxis,
@@ -84,6 +84,43 @@ const tempHrScatterData = rawSessions.map((s) => ({
   date: s.date,
 }));
 
+/** Least-squares regression y = slope * x + intercept for paired (x, y) samples. */
+function leastSquaresLine(xs: number[], ys: number[]): { slope: number; intercept: number } | null {
+  const n = xs.length;
+  if (n < 2 || xs.length !== ys.length) return null;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += xs[i];
+    sumY += ys[i];
+    sumXY += xs[i] * ys[i];
+    sumXX += xs[i] * xs[i];
+  }
+  const denom = n * sumXX - sumX * sumX;
+  if (Math.abs(denom) < 1e-12) {
+    return { slope: 0, intercept: sumY / n };
+  }
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return { slope, intercept };
+}
+
+const tempHrXs = tempHrScatterData.map((d) => d.tempF);
+const tempHrYs = tempHrScatterData.map((d) => d.avgHR);
+const tempHrRegression = leastSquaresLine(tempHrXs, tempHrYs);
+const tempHrTrendPad = 2;
+const tempHrXMin = Math.min(...tempHrXs) - tempHrTrendPad;
+const tempHrXMax = Math.max(...tempHrXs) + tempHrTrendPad;
+const tempHrTrendLineData =
+  tempHrRegression != null
+    ? [
+        { tempF: tempHrXMin, avgHR: tempHrRegression.slope * tempHrXMin + tempHrRegression.intercept },
+        { tempF: tempHrXMax, avgHR: tempHrRegression.slope * tempHrXMax + tempHrRegression.intercept },
+      ]
+    : [];
+
 const totalSessions = rawSessions.length;
 const avgCalories = avg(rawSessions.map(s => s.calories));
 const avgHR = avg(rawSessions.map(s => s.avgHR));
@@ -130,7 +167,7 @@ function TempHrScatterTooltip({
 }) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
-  if (!p) return null;
+  if (!p?.date) return null;
   return (
     <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm shadow-xl">
       <p className="text-zinc-300 font-medium mb-1.5">{formatDateFull(p.date)}</p>
@@ -210,7 +247,7 @@ export default function App() {
         <div className="mb-8">
           <ChartCard icon={<Thermometer className="w-4 h-4 text-sky-400" />} title="Temperature vs Avg HR">
             <ResponsiveContainer width="100%" height={280}>
-              <ScatterChart margin={{ top: 5, right: 16, left: 4, bottom: 28 }}>
+              <ComposedChart margin={{ top: 5, right: 16, left: 4, bottom: 28 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
                 <XAxis
                   type="number"
@@ -235,8 +272,20 @@ export default function App() {
                   label={{ value: 'Avg HR (bpm)', angle: -90, position: 'insideLeft', fill: '#71717a', fontSize: 11, offset: 8 }}
                 />
                 <Tooltip content={<TempHrScatterTooltip />} cursor={{ strokeDasharray: '3 3', stroke: '#52525b' }} />
+                <Line
+                  type="linear"
+                  data={tempHrTrendLineData}
+                  dataKey="avgHR"
+                  stroke="#9bd4e8"
+                  strokeWidth={1.5}
+                  strokeDasharray="6 5"
+                  dot={false}
+                  activeDot={false}
+                  legendType="none"
+                  isAnimationActive={false}
+                />
                 <Scatter name="Sessions" data={tempHrScatterData} fill="#38bdf8" />
-              </ScatterChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </ChartCard>
         </div>
