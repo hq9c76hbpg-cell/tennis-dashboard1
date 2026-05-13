@@ -32,6 +32,12 @@ const rawSessions: Session[] = [
   { date: '2026-04-26', duration: '2h 01m', durationMinutes: 121, avgHR: 148, maxHR: 188, calories: 924, steps: 4436, aerobicTE: 4.4, bodyBatteryDrain: -15 },
   { date: '2026-04-22', duration: '1h 56m', durationMinutes: 116, avgHR: 137, maxHR: 186, calories: 796, steps: 3988, aerobicTE: 3.5, bodyBatteryDrain: -12 },
   { date: '2026-04-19', duration: '1h 52m', durationMinutes: 112, avgHR: 136, maxHR: 174, calories: 738, steps: 3458, aerobicTE: 3.2, bodyBatteryDrain: -11 },
+  { date: '2026-04-07', duration: '1h 39m', durationMinutes: 99,  avgHR: 149, maxHR: 189, calories: 841, steps: 4124, aerobicTE: 3.8, bodyBatteryDrain: -12 },
+  { date: '2026-04-05', duration: '2h 05m', durationMinutes: 125, avgHR: 131, maxHR: 168, calories: 744, steps: 4944, aerobicTE: 2.9, bodyBatteryDrain: -9 },
+  { date: '2026-03-31', duration: '1h 39m', durationMinutes: 99,  avgHR: 145, maxHR: 183, calories: 811, steps: 4320, aerobicTE: 3.6, bodyBatteryDrain: -14 },
+  { date: '2026-03-29', duration: '1h 34m', durationMinutes: 94,  avgHR: 139, maxHR: 178, calories: 649, steps: 3520, aerobicTE: 3.2, bodyBatteryDrain: -7 },
+  { date: '2026-03-28', duration: '1h 29m', durationMinutes: 89,  avgHR: 134, maxHR: 170, calories: 620, steps: 3688, aerobicTE: 2.8, bodyBatteryDrain: -7 },
+  { date: '2026-03-27', duration: '0h 51m', durationMinutes: 51,  avgHR: 138, maxHR: 180, calories: 414, steps: 2714, aerobicTE: 2.8, bodyBatteryDrain: -8 },
 ];
 
 const chartSessions = [...rawSessions].reverse();
