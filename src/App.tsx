@@ -3,13 +3,15 @@ import {
   Line,
   BarChart,
   Bar,
+  ScatterChart,
+  Scatter,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { Activity, Flame, Heart, Clock, Zap, Battery } from 'lucide-react';
+import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer } from 'lucide-react';
 
 interface Session {
   date: string;
@@ -21,23 +23,24 @@ interface Session {
   steps: number;
   aerobicTE: number;
   bodyBatteryDrain: number;
+  tempF: number;
 }
 
 const rawSessions: Session[] = [
-  { date: '2026-05-11', duration: '1h 56m', durationMinutes: 116, avgHR: 153, maxHR: 183, calories: 895, steps: 5202, aerobicTE: 3.8, bodyBatteryDrain: -12 },
-  { date: '2026-05-07', duration: '1h 59m', durationMinutes: 119, avgHR: 134, maxHR: 188, calories: 690, steps: 4418, aerobicTE: 3.1, bodyBatteryDrain: -9 },
-  { date: '2026-05-03', duration: '2h 16m', durationMinutes: 136, avgHR: 136, maxHR: 172, calories: 800, steps: 4590, aerobicTE: 3.0, bodyBatteryDrain: -9 },
-  { date: '2026-05-02', duration: '1h 24m', durationMinutes: 84,  avgHR: 158, maxHR: 200, calories: 763, steps: 3834, aerobicTE: 5.0, bodyBatteryDrain: -15 },
-  { date: '2026-04-28', duration: '1h 58m', durationMinutes: 118, avgHR: 144, maxHR: 186, calories: 852, steps: 3802, aerobicTE: 4.1, bodyBatteryDrain: -15 },
-  { date: '2026-04-26', duration: '2h 01m', durationMinutes: 121, avgHR: 148, maxHR: 188, calories: 924, steps: 4436, aerobicTE: 4.4, bodyBatteryDrain: -15 },
-  { date: '2026-04-22', duration: '1h 56m', durationMinutes: 116, avgHR: 137, maxHR: 186, calories: 796, steps: 3988, aerobicTE: 3.5, bodyBatteryDrain: -12 },
-  { date: '2026-04-19', duration: '1h 52m', durationMinutes: 112, avgHR: 136, maxHR: 174, calories: 738, steps: 3458, aerobicTE: 3.2, bodyBatteryDrain: -11 },
-  { date: '2026-04-07', duration: '1h 39m', durationMinutes: 99,  avgHR: 149, maxHR: 189, calories: 841, steps: 4124, aerobicTE: 3.8, bodyBatteryDrain: -12 },
-  { date: '2026-04-05', duration: '2h 05m', durationMinutes: 125, avgHR: 131, maxHR: 168, calories: 744, steps: 4944, aerobicTE: 2.9, bodyBatteryDrain: -9 },
-  { date: '2026-03-31', duration: '1h 39m', durationMinutes: 99,  avgHR: 145, maxHR: 183, calories: 811, steps: 4320, aerobicTE: 3.6, bodyBatteryDrain: -14 },
-  { date: '2026-03-29', duration: '1h 34m', durationMinutes: 94,  avgHR: 139, maxHR: 178, calories: 649, steps: 3520, aerobicTE: 3.2, bodyBatteryDrain: -7 },
-  { date: '2026-03-28', duration: '1h 29m', durationMinutes: 89,  avgHR: 134, maxHR: 170, calories: 620, steps: 3688, aerobicTE: 2.8, bodyBatteryDrain: -7 },
-  { date: '2026-03-27', duration: '0h 51m', durationMinutes: 51,  avgHR: 138, maxHR: 180, calories: 414, steps: 2714, aerobicTE: 2.8, bodyBatteryDrain: -8 },
+  { date: '2026-05-11', duration: '1h 56m', durationMinutes: 116, avgHR: 153, maxHR: 183, calories: 895, steps: 5202, aerobicTE: 3.8, bodyBatteryDrain: -12, tempF: 76 },
+  { date: '2026-05-07', duration: '1h 59m', durationMinutes: 119, avgHR: 134, maxHR: 188, calories: 690, steps: 4418, aerobicTE: 3.1, bodyBatteryDrain: -9, tempF: 72 },
+  { date: '2026-05-03', duration: '2h 16m', durationMinutes: 136, avgHR: 136, maxHR: 172, calories: 800, steps: 4590, aerobicTE: 3.0, bodyBatteryDrain: -9, tempF: 75 },
+  { date: '2026-05-02', duration: '1h 24m', durationMinutes: 84,  avgHR: 158, maxHR: 200, calories: 763, steps: 3834, aerobicTE: 5.0, bodyBatteryDrain: -15, tempF: 85 },
+  { date: '2026-04-28', duration: '1h 58m', durationMinutes: 118, avgHR: 144, maxHR: 186, calories: 852, steps: 3802, aerobicTE: 4.1, bodyBatteryDrain: -15, tempF: 71 },
+  { date: '2026-04-26', duration: '2h 01m', durationMinutes: 121, avgHR: 148, maxHR: 188, calories: 924, steps: 4436, aerobicTE: 4.4, bodyBatteryDrain: -15, tempF: 73 },
+  { date: '2026-04-22', duration: '1h 56m', durationMinutes: 116, avgHR: 137, maxHR: 186, calories: 796, steps: 3988, aerobicTE: 3.5, bodyBatteryDrain: -12, tempF: 67 },
+  { date: '2026-04-19', duration: '1h 52m', durationMinutes: 112, avgHR: 136, maxHR: 174, calories: 738, steps: 3458, aerobicTE: 3.2, bodyBatteryDrain: -11, tempF: 64 },
+  { date: '2026-04-07', duration: '1h 39m', durationMinutes: 99,  avgHR: 149, maxHR: 189, calories: 841, steps: 4124, aerobicTE: 3.8, bodyBatteryDrain: -12, tempF: 66 },
+  { date: '2026-04-05', duration: '2h 05m', durationMinutes: 125, avgHR: 131, maxHR: 168, calories: 744, steps: 4944, aerobicTE: 2.9, bodyBatteryDrain: -9, tempF: 60 },
+  { date: '2026-03-31', duration: '1h 39m', durationMinutes: 99,  avgHR: 145, maxHR: 183, calories: 811, steps: 4320, aerobicTE: 3.6, bodyBatteryDrain: -14, tempF: 68 },
+  { date: '2026-03-29', duration: '1h 34m', durationMinutes: 94,  avgHR: 139, maxHR: 178, calories: 649, steps: 3520, aerobicTE: 3.2, bodyBatteryDrain: -7, tempF: 66 },
+  { date: '2026-03-28', duration: '1h 29m', durationMinutes: 89,  avgHR: 134, maxHR: 170, calories: 620, steps: 3688, aerobicTE: 2.8, bodyBatteryDrain: -7, tempF: 64 },
+  { date: '2026-03-27', duration: '0h 51m', durationMinutes: 51,  avgHR: 138, maxHR: 180, calories: 414, steps: 2714, aerobicTE: 2.8, bodyBatteryDrain: -8, tempF: 63 },
 ];
 
 const chartSessions = [...rawSessions].reverse();
@@ -75,6 +78,12 @@ const chartData = chartSessions.map(s => ({
   calories: s.calories,
 }));
 
+const tempHrScatterData = rawSessions.map((s) => ({
+  tempF: s.tempF,
+  avgHR: s.avgHR,
+  date: s.date,
+}));
+
 const totalSessions = rawSessions.length;
 const avgCalories = avg(rawSessions.map(s => s.calories));
 const avgHR = avg(rawSessions.map(s => s.avgHR));
@@ -102,6 +111,37 @@ function CalTooltip({ active, payload, label }: TooltipProps) {
     <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm shadow-xl">
       <p className="text-zinc-400 mb-0.5">{label}</p>
       <p className="text-amber-400 font-bold">{payload[0].value} kcal</p>
+    </div>
+  );
+}
+
+interface ScatterTooltipPayload {
+  tempF: number;
+  avgHR: number;
+  date: string;
+}
+
+function TempHrScatterTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: ScatterTooltipPayload }>;
+}) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  if (!p) return null;
+  return (
+    <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm shadow-xl">
+      <p className="text-zinc-300 font-medium mb-1.5">{formatDateFull(p.date)}</p>
+      <p className="text-sky-400">
+        <span className="text-zinc-500">Temp </span>
+        <span className="font-bold tabular-nums">{p.tempF}°F</span>
+      </p>
+      <p className="text-red-400 mt-0.5">
+        <span className="text-zinc-500">Avg HR </span>
+        <span className="font-bold tabular-nums">{p.avgHR} bpm</span>
+      </p>
     </div>
   );
 }
@@ -163,6 +203,40 @@ export default function App() {
                 <Tooltip content={<CalTooltip />} />
                 <Bar dataKey="calories" fill="#fbbf24" radius={[4, 4, 0, 0]} maxBarSize={40} />
               </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        </div>
+
+        <div className="mb-8">
+          <ChartCard icon={<Thermometer className="w-4 h-4 text-sky-400" />} title="Temperature vs Avg HR">
+            <ResponsiveContainer width="100%" height={280}>
+              <ScatterChart margin={{ top: 5, right: 16, left: 4, bottom: 28 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <XAxis
+                  type="number"
+                  dataKey="tempF"
+                  name="Temperature"
+                  unit=" °F"
+                  domain={['dataMin - 2', 'dataMax + 2']}
+                  tick={{ fill: '#71717a', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  label={{ value: 'Temperature (°F)', position: 'insideBottom', offset: -18, fill: '#71717a', fontSize: 11 }}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="avgHR"
+                  name="Avg HR"
+                  unit=" bpm"
+                  domain={['dataMin - 5', 'dataMax + 5']}
+                  tick={{ fill: '#71717a', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  label={{ value: 'Avg HR (bpm)', angle: -90, position: 'insideLeft', fill: '#71717a', fontSize: 11, offset: 8 }}
+                />
+                <Tooltip content={<TempHrScatterTooltip />} cursor={{ strokeDasharray: '3 3', stroke: '#52525b' }} />
+                <Scatter name="Sessions" data={tempHrScatterData} fill="#38bdf8" />
+              </ScatterChart>
             </ResponsiveContainer>
           </ChartCard>
         </div>
