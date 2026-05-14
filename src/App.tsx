@@ -11,9 +11,9 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown, Upload, RotateCcw } from 'lucide-react';
+import { Activity, Flame, Heart, Clock, Zap, Battery, Thermometer, ChevronDown } from 'lucide-react';
 
 const STORAGE_KEY = 'tennis-sessions';
 const STORAGE_VERSION = 1;
@@ -90,6 +90,10 @@ interface StoredSessions {
   version: number;
   importedAt: string;
   sessions: Session[];
+  /** From `ETag` response header — used for conditional re-fetch. */
+  etag?: string | null;
+  /** From `Last-Modified` response header — used for conditional re-fetch and display. */
+  sourceFileLastModified?: string | null;
 }
 
 function loadStoredSessions(): StoredSessions | null {
@@ -106,17 +110,32 @@ function loadStoredSessions(): StoredSessions | null {
     ) {
       return null;
     }
-    return { version: parsed.version, importedAt: parsed.importedAt, sessions: parsed.sessions };
+    return {
+      version: parsed.version,
+      importedAt: parsed.importedAt,
+      sessions: parsed.sessions,
+      etag: parsed.etag ?? null,
+      sourceFileLastModified: parsed.sourceFileLastModified ?? null,
+    };
   } catch {
     return null;
   }
 }
 
-function saveStoredSessions(sessions: Session[]): string {
+function saveStoredSessions(
+  sessions: Session[],
+  opts?: { etag?: string | null; sourceFileLastModified?: string | null },
+): string {
   const importedAt = new Date().toISOString();
   if (typeof window === 'undefined' || !window.localStorage) return importedAt;
   try {
-    const payload: StoredSessions = { version: STORAGE_VERSION, importedAt, sessions };
+    const payload: StoredSessions = {
+      version: STORAGE_VERSION,
+      importedAt,
+      sessions,
+      etag: opts?.etag ?? null,
+      sourceFileLastModified: opts?.sourceFileLastModified ?? null,
+    };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // ignore quota / private-mode failures — UI still reflects the in-memory state
@@ -124,25 +143,23 @@ function saveStoredSessions(sessions: Session[]): string {
   return importedAt;
 }
 
-function clearStoredSessions(): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-function formatImportedAt(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('en-US', {
+/** Display HTTP Last-Modified or ISO timestamp as a calendar date. */
+function formatActivitiesFileDate(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
   });
+}
+
+function getActivitiesCsvUrl(): string {
+  const base = import.meta.env.BASE_URL.endsWith('/')
+    ? import.meta.env.BASE_URL
+    : `${import.meta.env.BASE_URL}/`;
+  return `${base}Activities.csv`;
 }
 
 function normalizeCsvRow(row: Record<string, unknown>): Record<string, string> {
@@ -488,13 +505,12 @@ export default function App() {
     initialStored ? initialStored.sessions : cloneSessions(rawSessions),
   );
   const [usingFallbackData, setUsingFallbackData] = useState(() => initialStored == null);
-  const [lastImportedAt, setLastImportedAt] = useState<string | null>(() => initialStored?.importedAt ?? null);
+  const [activitiesUpdatedAt, setActivitiesUpdatedAt] = useState<string | null>(() =>
+    initialStored?.sourceFileLastModified ?? initialStored?.importedAt ?? null,
+  );
+  const [activitiesSyncComplete, setActivitiesSyncComplete] = useState(false);
   const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
-  const [csvSuccessMessage, setCsvSuccessMessage] = useState<string | null>(null);
-  const [csvErrorMessage, setCsvErrorMessage] = useState<string | null>(null);
-  const [dragActive, setDragActive] = useState(false);
   const [highlightsOpen, setHighlightsOpen] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const chartSessions = useMemo(() => [...sessions].reverse(), [sessions]);
   const chartData = useMemo(
@@ -632,52 +648,67 @@ export default function App() {
   }, [sessions]);
 
   useEffect(() => {
-    if (!csvSuccessMessage) return;
-    const t = window.setTimeout(() => setCsvSuccessMessage(null), 6500);
-    return () => window.clearTimeout(t);
-  }, [csvSuccessMessage]);
+    let cancelled = false;
 
-  const processCsvText = (text: string) => {
-    setCsvErrorMessage(null);
-    setCsvSuccessMessage(null);
-    const { sessions: imported, errors } = parseTennisSessionsFromGarminCsv(text);
-    if (imported.length === 0) {
-      setCsvErrorMessage(
-        errors[0] ??
-          'No Tennis activities found. Export your activities CSV from Garmin Connect and ensure the Activity Type column includes "Tennis".',
-      );
-      return;
+    async function loadActivitiesCsv() {
+      const csvUrl = getActivitiesCsvUrl();
+      const cache = loadStoredSessions();
+      const headers = new Headers();
+      if (cache?.etag) headers.set('If-None-Match', cache.etag);
+      if (cache?.sourceFileLastModified) {
+        headers.set('If-Modified-Since', cache.sourceFileLastModified);
+      }
+
+      try {
+        const res = await fetch(csvUrl, { headers });
+        if (cancelled) return;
+
+        if (res.status === 304 && cache) {
+          setSessions(cache.sessions);
+          setUsingFallbackData(false);
+          setActivitiesUpdatedAt(cache.sourceFileLastModified ?? cache.importedAt);
+          return;
+        }
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const text = await res.text();
+        const etag = res.headers.get('ETag');
+        const sourceFileLastModified = res.headers.get('Last-Modified');
+
+        const { sessions: imported, errors } = parseTennisSessionsFromGarminCsv(text);
+        if (imported.length === 0) {
+          throw new Error(errors[0] ?? 'No Tennis rows in Activities.csv');
+        }
+
+        saveStoredSessions(imported, { etag, sourceFileLastModified });
+        setSessions(imported);
+        setUsingFallbackData(false);
+        setActivitiesUpdatedAt(sourceFileLastModified ?? new Date().toISOString());
+        setExpandedSessionKey(null);
+      } catch {
+        if (cancelled) return;
+        if (cache?.sessions?.length) {
+          setSessions(cache.sessions);
+          setUsingFallbackData(false);
+          setActivitiesUpdatedAt(cache.sourceFileLastModified ?? cache.importedAt);
+        } else {
+          setSessions(cloneSessions(rawSessions));
+          setUsingFallbackData(true);
+          setActivitiesUpdatedAt(null);
+        }
+      } finally {
+        if (!cancelled) setActivitiesSyncComplete(true);
+      }
     }
-    const importedAt = saveStoredSessions(imported);
-    setSessions(imported);
-    setUsingFallbackData(false);
-    setLastImportedAt(importedAt);
-    setExpandedSessionKey(null);
-    setCsvSuccessMessage(`Imported ${imported.length} tennis session${imported.length === 1 ? '' : 's'} from CSV.`);
-  };
 
-  const handleResetToSample = () => {
-    clearStoredSessions();
-    setSessions(cloneSessions(rawSessions));
-    setUsingFallbackData(true);
-    setLastImportedAt(null);
-    setExpandedSessionKey(null);
-    setCsvErrorMessage(null);
-    setCsvSuccessMessage('Cleared imported data — showing sample sessions.');
-  };
-
-  const handleFile = (file: File | undefined) => {
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.csv')) {
-      setCsvErrorMessage('Please choose a .csv file.');
-      setCsvSuccessMessage(null);
-      return;
-    }
-    file.text().then(processCsvText).catch(() => {
-      setCsvErrorMessage('Could not read that file.');
-      setCsvSuccessMessage(null);
-    });
-  };
+    loadActivitiesCsv();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -690,82 +721,24 @@ export default function App() {
           </h1>
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <p className="text-zinc-500 text-sm">{totalSessions} sessions recorded</p>
-            {usingFallbackData && (
+            {usingFallbackData && activitiesSyncComplete && (
               <span className="text-[11px] text-zinc-600 font-medium tracking-wide">· using sample data</span>
             )}
           </div>
         </header>
 
-        {/* CSV import */}
-        <div className="mb-8 space-y-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            className="sr-only"
-            onChange={(e) => {
-              handleFile(e.target.files?.[0]);
-              e.target.value = '';
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            onDragEnter={(e) => {
-              e.preventDefault();
-              setDragActive(true);
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'copy';
-            }}
-            onDragLeave={(e) => {
-              e.preventDefault();
-              if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragActive(false);
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragActive(false);
-              const f = e.dataTransfer.files?.[0];
-              handleFile(f);
-            }}
-            className={`group w-full rounded-xl border border-dashed px-4 py-5 text-center transition-colors duration-200 cursor-pointer select-none
-              ${dragActive ? 'border-sky-500/60 bg-sky-500/5' : 'border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 hover:bg-zinc-900/70'}
-            `}
-          >
-            <Upload className="w-6 h-6 mx-auto mb-2 text-zinc-500 group-hover:text-zinc-400 transition-colors" aria-hidden />
-            <p className="text-sm font-medium text-zinc-300">Drop your Garmin Activities CSV here</p>
-            <p className="text-[11px] text-zinc-600 mt-1">or click to browse · Tennis activities only</p>
-          </button>
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-1">
-            <p className="text-[11px] text-zinc-500 tabular-nums">
-              {lastImportedAt
-                ? <>Last imported: <span className="text-zinc-400">{formatImportedAt(lastImportedAt)}</span></>
-                : <span className="text-zinc-600">No CSV imported yet</span>}
-            </p>
-            {!usingFallbackData && (
-              <button
-                type="button"
-                onClick={handleResetToSample}
-                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50"
-                title="Clear imported data and revert to sample sessions"
-              >
-                <RotateCcw className="w-3 h-3" aria-hidden />
-                Clear data
-              </button>
-            )}
-          </div>
-          {csvSuccessMessage && (
-            <p className="text-xs font-medium text-emerald-400/90 pl-1" role="status">
-              {csvSuccessMessage}
-            </p>
-          )}
-          {csvErrorMessage && (
-            <p className="text-xs font-medium text-amber-400/90 pl-1" role="alert">
-              {csvErrorMessage}
-            </p>
-          )}
-        </div>
+        <p className="text-[11px] text-zinc-600 mb-6 pl-0.5">
+          {!activitiesSyncComplete ? (
+            <span className="text-zinc-500">Loading activities…</span>
+          ) : usingFallbackData ? (
+            <span>Activities.csv unavailable — using sample data</span>
+          ) : activitiesUpdatedAt ? (
+            <>
+              Last updated{' '}
+              <span className="text-zinc-500 tabular-nums">{formatActivitiesFileDate(activitiesUpdatedAt)}</span>
+            </>
+          ) : null}
+        </p>
 
         {/* Summary Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
